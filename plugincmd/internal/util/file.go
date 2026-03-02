@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+func IsLocalPath(s string) bool {
+	return filepath.IsAbs(s) || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../")
+}
+
 func CompilePlugin(srcDir, outputPath string) error {
 	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", outputPath, ".")
 	cmd.Dir = srcDir

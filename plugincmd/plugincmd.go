@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"plugin"
@@ -16,6 +17,7 @@ import (
 	"github.com/paccolamano/plugin/plugincmd/internal/util"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/spf13/cobra"
 )
 
@@ -82,15 +84,15 @@ func ensureCollection(app core.App) error {
 
 	pluginCollection.Fields.Add(
 		&core.TextField{
-			Name:     "repository",
+			Name:     "pluginUri",
+			Required: true,
+		},
+		&core.TextField{
+			Name:     "buildFile",
 			Required: true,
 		},
 		&core.TextField{
 			Name:     "version",
-			Required: true,
-		},
-		&core.TextField{
-			Name:     "file",
 			Required: true,
 		},
 	)
@@ -105,26 +107,26 @@ func loadAll(app core.App, dir string) error {
 	}
 
 	for _, record := range records {
-		repo := record.GetString("repository")
-		soPath := filepath.Join(dir, record.GetString("file"))
+		uri := record.GetString("pluginUri")
+		soPath := filepath.Join(dir, record.GetString("buildFile"))
 
 		p, err := plugin.Open(soPath)
 		if err != nil {
-			return fmt.Errorf("plugin %q: open failed: %w", repo, err)
+			return fmt.Errorf("plugin %q: open failed: %w", uri, err)
 		}
 
 		sym, err := p.Lookup("Plugin")
 		if err != nil {
-			return fmt.Errorf("plugin %q: missing exported 'Plugin' symbol: %w", repo, err)
+			return fmt.Errorf("plugin %q: missing exported 'Plugin' symbol: %w", uri, err)
 		}
 
 		pbPlugin, ok := sym.(*pbplugin.PBPlugin)
 		if !ok {
-			return fmt.Errorf("plugin %q: 'Plugin' does not implement PBPlugin", repo)
+			return fmt.Errorf("plugin %q: 'Plugin' does not implement PBPlugin", uri)
 		}
 
 		if err := (*pbPlugin).Register(app); err != nil {
-			return fmt.Errorf("plugin %q: Register failed: %w", repo, err)
+			return fmt.Errorf("plugin %q: Register failed: %w", uri, err)
 		}
 	}
 
@@ -151,18 +153,28 @@ func (pm *pluginCmd) newCommand() *cobra.Command {
 }
 
 func (pm *pluginCmd) cmdInstall() *cobra.Command {
-	var token, serverURL, provider string
+	var token, provider string
 
 	cmd := &cobra.Command{
-		Use:          "install <owner/repo>",
-		Short:        "Install a plugin from a Git hosting provider",
-		Args:         cobra.ExactArgs(1),
+		Use:          "install <owner/repo | https://... | ./path> [version]",
+		Short:        "Install a plugin from GitHub, a Git hosting provider, or a local path",
+		Args:         cobra.RangeArgs(1, 2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if serverURL != "" && !cmd.Flags().Changed("provider") {
-				return fmt.Errorf("flag --provider is required when --url is specified (supported: github, gitea, forgejo, gitlab)")
+			target := args[0]
+			version := "latest"
+			if len(args) == 2 {
+				version = args[1]
 			}
-			err := pm.install(cmd.Context(), args[0], provider, serverURL, token)
+
+			if util.IsLocalPath(target) && len(args) == 2 {
+				return fmt.Errorf("version argument is not supported for local plugins")
+			}
+			if strings.HasPrefix(target, "https://") && !cmd.Flags().Changed("provider") {
+				return fmt.Errorf("flag --provider is required when target is a URL (supported: github, gitea, forgejo, gitlab)")
+			}
+
+			err := pm.install(cmd.Context(), target, version, provider, token)
 			if errors.Is(err, ErrAlreadyInstalled) {
 				return nil
 			}
@@ -170,30 +182,55 @@ func (pm *pluginCmd) cmdInstall() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&provider, "provider", "github", "git provider: github, gitea, forgejo, gitlab")
-	cmd.Flags().StringVar(&serverURL, "url", "", "base URL of the Git server API for self-hosted instances")
+	cmd.Flags().StringVar(&provider, "provider", "", "git provider for URL targets: github, gitea, forgejo, gitlab")
 	cmd.Flags().StringVar(&token, "token", "", "personal access token (required for private repositories)")
 
 	return cmd
 }
 
-func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, token string) (err error) {
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("invalid repo format: expected owner/repo")
+func (pm *pluginCmd) install(ctx context.Context, target, version, provider, token string) error {
+	if util.IsLocalPath(target) {
+		return pm.installLocal(target)
 	}
+
+	if strings.HasPrefix(target, "https://") {
+		return pm.installFromURL(ctx, target, version, provider, token)
+	}
+
+	// owner/repo = shorthand github
+	if strings.Count(target, "/") == 1 && !strings.HasPrefix(target, "/") {
+		return pm.installFromURL(ctx, "https://github.com/"+target, version, "github", token)
+	}
+
+	return fmt.Errorf("invalid target %q: expected owner/repo, https://..., or a local path (./...)", target)
+}
+
+func (pm *pluginCmd) installFromURL(ctx context.Context, repoURL, version, provider, token string) (err error) {
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", repoURL, err)
+	}
+
+	webBase := u.Scheme + "://" + u.Host
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("cannot extract owner/repo from URL %q", repoURL)
+	}
+
+	ownerRepo := parts[0] + "/" + parts[1]
 	repoName := parts[1]
 
-	if existing, err := pm.app.FindFirstRecordByData(pluginCollectionName, "repository", repo); err == nil {
-		return fmt.Errorf("plugin %q is already installed (version %s): %w", repo, existing.GetString("version"), ErrAlreadyInstalled)
+	if existing, err := pm.app.FindFirstRecordByData(pluginCollectionName, "pluginUri", repoURL); err == nil {
+		return fmt.Errorf("plugin %q is already installed (version %s): %w", repoURL, existing.GetString("version"), ErrAlreadyInstalled)
 	}
 
-	gc, err := git.NewClient(provider, token, serverURL)
+	apiBase := git.APIBaseURL(provider, webBase)
+	gc, err := git.NewClient(provider, apiBase, token)
 	if err != nil {
 		return err
 	}
 
-	release, err := gc.GetRelease(ctx, repo, "latest")
+	release, err := gc.GetRelease(ctx, ownerRepo, version)
 	if err != nil {
 		return err
 	}
@@ -204,7 +241,7 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 	}
 	defer os.RemoveAll(tmpDir)
 
-	fmt.Printf("Downloading %s@%s...\n", repo, release.TagName)
+	fmt.Printf("Downloading %s@%s...\n", repoURL, release.TagName)
 	body, err := gc.DownloadRelease(ctx, release.TarballURL)
 	if err != nil {
 		return err
@@ -220,7 +257,7 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 		return fmt.Errorf("failed to create plugins directory: %w", err)
 	}
 
-	soName := fmt.Sprintf("%s_%s_%s.so", repoName, runtime.GOOS, runtime.GOARCH)
+	soName := fmt.Sprintf("%s_%s_%s_%s.so", security.RandomString(10), repoName, runtime.GOOS, runtime.GOARCH)
 	destPath := filepath.Join(pm.config.Dir, soName)
 	defer func() {
 		if err != nil {
@@ -228,7 +265,7 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 		}
 	}()
 
-	fmt.Printf("Compiling %s...\n", repo)
+	fmt.Printf("Compiling %s...\n", repoURL)
 	if err := util.CompilePlugin(srcDir, destPath); err != nil {
 		return err
 	}
@@ -239,29 +276,68 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 	}
 
 	record := core.NewRecord(pluginCollection)
-	record.Set("repository", repo)
+	record.Set("pluginUri", repoURL)
+	record.Set("buildFile", soName)
 	record.Set("version", release.TagName)
-	record.Set("file", soName)
 
 	if err := pm.app.Save(record); err != nil {
 		return fmt.Errorf("failed to save plugin record: %w", err)
 	}
 
-	fmt.Printf("Installed %s@%s\n", repo, release.TagName)
+	fmt.Printf("Installed %s@%s\n", repoURL, release.TagName)
+	pm.maybeRestart()
+	return nil
+}
 
-	if pm.config.Autorestart {
-		fmt.Println("Signaling server to restart...")
-		if err := util.SignalServe(pm.config.Dir); err != nil {
-			fmt.Printf("Warning: %v\nPlease restart the server manually.\n", err)
-		}
+func (pm *pluginCmd) installLocal(localPath string) error {
+	absPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve path: %w", err)
 	}
 
+	uri := "file://" + absPath
+
+	if existing, err := pm.app.FindFirstRecordByData(pluginCollectionName, "pluginUri", uri); err == nil {
+		return fmt.Errorf("plugin from %q is already installed (version %s): %w", absPath, existing.GetString("version"), ErrAlreadyInstalled)
+	}
+
+	if err := os.MkdirAll(pm.config.Dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create plugins directory: %w", err)
+	}
+
+	soName := fmt.Sprintf("%s_%s_%s_%s.so", security.RandomString(10), filepath.Base(absPath), runtime.GOOS, runtime.GOARCH)
+	destPath := filepath.Join(pm.config.Dir, soName)
+
+	fmt.Printf("Compiling %s...\n", absPath)
+	if err := util.CompilePlugin(absPath, destPath); err != nil {
+		os.Remove(destPath)
+		return err
+	}
+
+	pluginCollection, err := pm.app.FindCollectionByNameOrId(pluginCollectionName)
+	if err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("plugins collection not found: %w", err)
+	}
+
+	record := core.NewRecord(pluginCollection)
+	record.Set("pluginUri", uri)
+	record.Set("buildFile", soName)
+	record.Set("version", "unknown")
+
+	if err := pm.app.Save(record); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("failed to save plugin record: %w", err)
+	}
+
+	fmt.Printf("Installed %s\n", absPath)
+	pm.maybeRestart()
 	return nil
 }
 
 func (pm *pluginCmd) cmdRemove() *cobra.Command {
 	return &cobra.Command{
-		Use:          "rm <owner/repo>",
+		Use:          "rm <owner/repo | https://... | ./path>",
 		Short:        "Remove an installed plugin",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
@@ -275,13 +351,13 @@ func (pm *pluginCmd) cmdRemove() *cobra.Command {
 	}
 }
 
-func (pm *pluginCmd) remove(repo string) error {
-	record, err := pm.app.FindFirstRecordByData(pluginCollectionName, "repository", repo)
+func (pm *pluginCmd) remove(target string) error {
+	record, err := pm.findByURI(target)
 	if err != nil {
-		return fmt.Errorf("plugin %q is not installed: %w", repo, ErrNotInstalled)
+		return fmt.Errorf("plugin %q is not installed: %w", target, ErrNotInstalled)
 	}
 
-	soPath := filepath.Join(pm.config.Dir, record.GetString("file"))
+	soPath := filepath.Join(pm.config.Dir, record.GetString("buildFile"))
 	if err := os.Remove(soPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove plugin file: %w", err)
 	}
@@ -290,16 +366,35 @@ func (pm *pluginCmd) remove(repo string) error {
 		return fmt.Errorf("failed to remove plugin record: %w", err)
 	}
 
-	fmt.Printf("Removed %s\n", repo)
-
-	if pm.config.Autorestart {
-		fmt.Println("Signaling server to restart...")
-		if err := util.SignalServe(pm.config.Dir); err != nil {
-			fmt.Printf("Warning: %v\nPlease restart the server manually.\n", err)
-		}
-	}
-
+	fmt.Printf("Removed %s\n", target)
+	pm.maybeRestart()
 	return nil
+}
+
+func (pm *pluginCmd) findByURI(target string) (*core.Record, error) {
+	uri, err := resolveURI(target)
+	if err != nil {
+		return nil, err
+	}
+	return pm.app.FindFirstRecordByData(pluginCollectionName, "pluginUri", uri)
+}
+
+func resolveURI(target string) (string, error) {
+	if util.IsLocalPath(target) {
+		absPath, err := filepath.Abs(target)
+		if err != nil {
+			return "", err
+		}
+		return "file://" + absPath, nil
+	}
+	if strings.HasPrefix(target, "https://") {
+		return target, nil
+	}
+	// owner/repo shorthand → GitHub
+	if strings.Count(target, "/") == 1 {
+		return "https://github.com/" + target, nil
+	}
+	return "", fmt.Errorf("unrecognized target format %q", target)
 }
 
 func (pm *pluginCmd) cmdList() *cobra.Command {
@@ -320,10 +415,19 @@ func (pm *pluginCmd) list() error {
 		return nil
 	}
 
-	fmt.Printf("%-45s %s\n", "PLUGIN", "VERSION")
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Printf("%-55s %s\n", "PLUGIN", "VERSION")
+	fmt.Println(strings.Repeat("-", 70))
 	for _, r := range records {
-		fmt.Printf("%-45s %s\n", r.GetString("repository"), r.GetString("version"))
+		fmt.Printf("%-55s %s\n", r.GetString("pluginUri"), r.GetString("version"))
 	}
 	return nil
+}
+
+func (pm *pluginCmd) maybeRestart() {
+	if pm.config.Autorestart {
+		fmt.Println("Signaling server to restart...")
+		if err := util.SignalServe(pm.config.Dir); err != nil {
+			fmt.Printf("Warning: %v\nPlease restart the server manually.\n", err)
+		}
+	}
 }

@@ -19,10 +19,14 @@ type GitClient interface {
 	DownloadRelease(ctx context.Context, rawURL string) (io.ReadCloser, error)
 }
 
-func NewClient(provider, token, serverURL string) (GitClient, error) {
-	opts := []util.HTTPClientOption{util.WithToken(token)}
-	if serverURL != "" {
-		opts = append(opts, util.WithBaseURL(serverURL))
+// NewClient creates a Git provider client.
+// apiBase is the API base URL (e.g. "https://api.github.com" for GitHub,
+// "https://gitlab.com/api/v4" for GitLab). Use apiBaseURL to derive it from
+// a web URL.
+func NewClient(provider, apiBase, token string) (GitClient, error) {
+	opts := []util.HTTPClientOption{
+		util.WithToken(token),
+		util.WithBaseURL(apiBase),
 	}
 	switch provider {
 	case "github", "gitea", "forgejo":
@@ -31,6 +35,22 @@ func NewClient(provider, token, serverURL string) (GitClient, error) {
 		return newGLClient(opts...), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q (supported: github, gitea, forgejo, gitlab)", provider)
+	}
+}
+
+// APIBaseURL derives the API base URL from a provider name and the web base
+// URL (scheme + host, e.g. "https://github.com").
+func APIBaseURL(provider, webBase string) string {
+	switch provider {
+	case "github":
+		if webBase == "https://github.com" {
+			return "https://api.github.com"
+		}
+		return webBase // GitHub Enterprise: same host, no path prefix
+	case "gitlab":
+		return webBase + "/api/v4"
+	default: // gitea, forgejo
+		return webBase
 	}
 }
 
