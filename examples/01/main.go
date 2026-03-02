@@ -11,7 +11,9 @@ import (
 func main() {
 	app := pocketbase.New()
 
-	plugincmd.MustRegister(app, app.RootCmd, plugincmd.Config{})
+	plugincmd.MustRegister(app, app.RootCmd, plugincmd.Config{
+		Autorestart: true,
+	})
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
