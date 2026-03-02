@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'pbplugin/v[0-9]+.[0-9]+.[0-9]+'
+      - 'plugincmd/v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
   release:
@@ -15,10 +16,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Detect module from tag
+        id: module
+        run: |
+          MODULE="${GITHUB_REF_NAME%%/*}"
+          echo "go_mod=${MODULE}/go.mod" >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ steps.module.outputs.go_mod }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
