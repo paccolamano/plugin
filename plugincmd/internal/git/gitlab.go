@@ -31,7 +31,6 @@ type glClient struct {
 
 func newGLClient(opts ...util.HTTPClientOption) *glClient {
 	c := util.NewHTTPClient(
-		util.WithBaseURL("https://gitlab.com/api/v4"),
 		util.WithHeader("Content-Type", "application/json"),
 		util.WithHeader("User-Agent", "pocketbase-plugin-manager"),
 	)

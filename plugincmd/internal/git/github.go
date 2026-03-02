@@ -22,7 +22,6 @@ type ghClient struct {
 
 func newGHClient(opts ...util.HTTPClientOption) *ghClient {
 	c := util.NewHTTPClient(
-		util.WithBaseURL("https://api.github.com"),
 		util.WithHeader("Accept", "application/vnd.github+json"),
 		util.WithHeader("X-GitHub-Api-Version", "2022-11-28"),
 		util.WithHeader("User-Agent", "pocketbase-plugin-manager"),

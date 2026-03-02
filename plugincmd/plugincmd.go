@@ -289,7 +289,7 @@ func (pm *pluginCmd) installFromURL(ctx context.Context, repoURL, version, provi
 	return nil
 }
 
-func (pm *pluginCmd) installLocal(localPath string) error {
+func (pm *pluginCmd) installLocal(localPath string) (err error) {
 	absPath, err := filepath.Abs(localPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
@@ -307,16 +307,19 @@ func (pm *pluginCmd) installLocal(localPath string) error {
 
 	soName := fmt.Sprintf("%s_%s_%s_%s.so", security.RandomString(10), filepath.Base(absPath), runtime.GOOS, runtime.GOARCH)
 	destPath := filepath.Join(pm.config.Dir, soName)
+	defer func() {
+		if err != nil {
+			os.Remove(destPath)
+		}
+	}()
 
 	fmt.Printf("Compiling %s...\n", absPath)
 	if err := util.CompilePlugin(absPath, destPath); err != nil {
-		os.Remove(destPath)
 		return err
 	}
 
 	pluginCollection, err := pm.app.FindCollectionByNameOrId(pluginCollectionName)
 	if err != nil {
-		os.Remove(destPath)
 		return fmt.Errorf("plugins collection not found: %w", err)
 	}
 
@@ -326,7 +329,6 @@ func (pm *pluginCmd) installLocal(localPath string) error {
 	record.Set("version", "unknown")
 
 	if err := pm.app.Save(record); err != nil {
-		os.Remove(destPath)
 		return fmt.Errorf("failed to save plugin record: %w", err)
 	}
 
