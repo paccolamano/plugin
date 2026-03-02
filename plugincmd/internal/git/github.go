@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/paccolamano/plugin/plugincmd/internal/httputil"
+	"github.com/paccolamano/plugin/plugincmd/internal/util"
 )
 
 type ghRelease struct {
@@ -17,15 +17,15 @@ type ghRelease struct {
 }
 
 type ghClient struct {
-	client *httputil.Client
+	client *util.HTTPClient
 }
 
-func newGHClient(opts ...httputil.ClientOption) *ghClient {
-	c := httputil.NewClient(
-		httputil.WithBaseURL("https://api.github.com"),
-		httputil.WithHeader("Accept", "application/vnd.github+json"),
-		httputil.WithHeader("X-GitHub-Api-Version", "2022-11-28"),
-		httputil.WithHeader("User-Agent", "pocketbase-plugin-manager"),
+func newGHClient(opts ...util.HTTPClientOption) *ghClient {
+	c := util.NewHTTPClient(
+		util.WithBaseURL("https://api.github.com"),
+		util.WithHeader("Accept", "application/vnd.github+json"),
+		util.WithHeader("X-GitHub-Api-Version", "2022-11-28"),
+		util.WithHeader("User-Agent", "pocketbase-plugin-manager"),
 	)
 	for _, opt := range opts {
 		opt(c)
@@ -69,18 +69,5 @@ func (ghc *ghClient) GetRelease(ctx context.Context, repo, version string) (*Rel
 }
 
 func (ghc *ghClient) DownloadRelease(ctx context.Context, rawURL string) (io.ReadCloser, error) {
-	resp, err := ghc.client.DoAbsolute(ctx, http.MethodGet, rawURL, nil, -1, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return resp.Body, nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		resp.Body.Close()
-		return nil, fmt.Errorf("download failed: authentication required or access denied (HTTP %d)", resp.StatusCode)
-	default:
-		resp.Body.Close()
-		return nil, fmt.Errorf("download failed: HTTP %s", resp.Status)
-	}
+	return downloadRelease(ctx, ghc.client, rawURL)
 }

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/paccolamano/plugin/plugincmd/internal/httputil"
+	"github.com/paccolamano/plugin/plugincmd/internal/util"
 )
 
 type glRelease struct {
@@ -26,14 +26,14 @@ type glSource struct {
 }
 
 type glClient struct {
-	client *httputil.Client
+	client *util.HTTPClient
 }
 
-func newGLClient(opts ...httputil.ClientOption) *glClient {
-	c := httputil.NewClient(
-		httputil.WithBaseURL("https://gitlab.com/api/v4"),
-		httputil.WithHeader("Content-Type", "application/json"),
-		httputil.WithHeader("User-Agent", "pocketbase-plugin-manager"),
+func newGLClient(opts ...util.HTTPClientOption) *glClient {
+	c := util.NewHTTPClient(
+		util.WithBaseURL("https://gitlab.com/api/v4"),
+		util.WithHeader("Content-Type", "application/json"),
+		util.WithHeader("User-Agent", "pocketbase-plugin-manager"),
 	)
 	for _, opt := range opts {
 		opt(c)
@@ -89,31 +89,15 @@ func (glc *glClient) GetRelease(ctx context.Context, repo, version string) (*Rel
 		}
 	}
 
-	return toRelease(r, repo)
-}
-
-func (glc *glClient) DownloadRelease(ctx context.Context, rawURL string) (io.ReadCloser, error) {
-	resp, err := glc.client.DoAbsolute(ctx, http.MethodGet, rawURL, nil, -1, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return resp.Body, nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		resp.Body.Close()
-		return nil, fmt.Errorf("download failed: authentication required or access denied (HTTP %d)", resp.StatusCode)
-	default:
-		resp.Body.Close()
-		return nil, fmt.Errorf("download failed: HTTP %s", resp.Status)
-	}
-}
-
-func toRelease(r glRelease, repo string) (*Release, error) {
 	for _, s := range r.Assets.Sources {
 		if s.Format == "tar.gz" {
 			return &Release{TagName: r.TagName, TarballURL: s.URL}, nil
 		}
 	}
+
 	return nil, fmt.Errorf("repository %q: release %q has no tar.gz source", repo, r.TagName)
+}
+
+func (glc *glClient) DownloadRelease(ctx context.Context, rawURL string) (io.ReadCloser, error) {
+	return downloadRelease(ctx, glc.client, rawURL)
 }

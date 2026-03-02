@@ -13,13 +13,16 @@ import (
 
 	"github.com/paccolamano/plugin/pbplugin"
 	"github.com/paccolamano/plugin/plugincmd/internal/git"
-	"github.com/paccolamano/plugin/plugincmd/internal/osutil"
+	"github.com/paccolamano/plugin/plugincmd/internal/util"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/spf13/cobra"
 )
 
-const pluginCollectionName = "_pb_plugins"
+const (
+	pluginCollectionName = "_plugins"
+	defaultPluginFolder  = "pb_plugins"
+)
 
 var (
 	ErrAlreadyInstalled = errors.New("already installed")
@@ -39,7 +42,7 @@ func MustRegister(app core.App, rootCmd *cobra.Command, config Config) {
 
 func Register(app core.App, rootCmd *cobra.Command, config Config) error {
 	if config.Dir == "" {
-		config.Dir = filepath.Join(app.DataDir(), "../pb_plugins")
+		config.Dir = filepath.Join(app.DataDir(), "..", defaultPluginFolder)
 	}
 
 	pm := &pluginCmd{app: app, config: config}
@@ -52,11 +55,11 @@ func Register(app core.App, rootCmd *cobra.Command, config Config) error {
 			return err
 		}
 
-		if pm.config.Autorestart && osutil.IsServeProcess() {
+		if pm.config.Autorestart && util.IsServeProcess() {
 			if err := os.MkdirAll(pm.config.Dir, 0o755); err == nil {
-				_ = os.WriteFile(osutil.PidFilePath(pm.config.Dir), []byte(strconv.Itoa(os.Getpid())), 0o644)
+				_ = os.WriteFile(util.PidFilePath(pm.config.Dir), []byte(strconv.Itoa(os.Getpid())), 0o644)
 			}
-			osutil.SetupRestartSignal()
+			util.SetupRestartSignal()
 		}
 
 		return loadAll(e.App, pm.config.Dir)
@@ -97,7 +100,7 @@ func ensureCollection(app core.App) error {
 
 func loadAll(app core.App, dir string) error {
 	if dir == "" {
-		dir = filepath.Join(app.DataDir(), "../pb_plugins")
+		dir = filepath.Join(app.DataDir(), "..", defaultPluginFolder)
 	}
 
 	records, err := app.FindAllRecords(pluginCollectionName)
@@ -178,7 +181,7 @@ func (pm *pluginCmd) cmdInstall() *cobra.Command {
 	return cmd
 }
 
-func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, token string) error {
+func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, token string) (err error) {
 	parts := strings.SplitN(repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("invalid repo format: expected owner/repo")
@@ -212,7 +215,7 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 	}
 	defer body.Close()
 
-	srcDir, err := osutil.ExtractTarball(body, tmpDir)
+	srcDir, err := util.ExtractTarball(body, tmpDir)
 	if err != nil {
 		return err
 	}
@@ -223,15 +226,19 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 
 	soName := fmt.Sprintf("%s_%s_%s.so", repoName, runtime.GOOS, runtime.GOARCH)
 	destPath := filepath.Join(pm.config.Dir, soName)
+	defer func() {
+		if err != nil {
+			os.Remove(destPath)
+		}
+	}()
 
 	fmt.Printf("Compiling %s...\n", repo)
-	if err := osutil.CompilePlugin(srcDir, destPath); err != nil {
+	if err := util.CompilePlugin(srcDir, destPath); err != nil {
 		return err
 	}
 
 	pluginCollection, err := pm.app.FindCollectionByNameOrId(pluginCollectionName)
 	if err != nil {
-		os.Remove(destPath)
 		return fmt.Errorf("plugins collection not found: %w", err)
 	}
 
@@ -241,7 +248,6 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 	record.Set("file", soName)
 
 	if err := pm.app.Save(record); err != nil {
-		os.Remove(destPath)
 		return fmt.Errorf("failed to save plugin record: %w", err)
 	}
 
@@ -249,7 +255,7 @@ func (pm *pluginCmd) install(ctx context.Context, repo, provider, serverURL, tok
 
 	if pm.config.Autorestart {
 		fmt.Println("Signaling server to restart...")
-		if err := osutil.SignalServe(pm.config.Dir); err != nil {
+		if err := util.SignalServe(pm.config.Dir); err != nil {
 			fmt.Printf("Warning: %v\nPlease restart the server manually.\n", err)
 		}
 	}
@@ -292,7 +298,7 @@ func (pm *pluginCmd) remove(repo string) error {
 
 	if pm.config.Autorestart {
 		fmt.Println("Signaling server to restart...")
-		if err := osutil.SignalServe(pm.config.Dir); err != nil {
+		if err := util.SignalServe(pm.config.Dir); err != nil {
 			fmt.Printf("Warning: %v\nPlease restart the server manually.\n", err)
 		}
 	}
