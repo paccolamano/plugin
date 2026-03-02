@@ -3,7 +3,8 @@ package main
 import (
 	"log"
 
-	"github.com/paccolamano/plugincmd"
+	"github.com/paccolamano/plugin/plugincmd"
+
 	"github.com/pocketbase/pocketbase"
 )
 
