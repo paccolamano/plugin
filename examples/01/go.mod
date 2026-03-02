@@ -3,7 +3,7 @@ module examples/plugin-01
 go 1.25.7
 
 require (
-	github.com/paccolamano/plugin/plugincmd v0.0.0
+	github.com/paccolamano/plugin/plugincmd v0.1.0
 	github.com/pocketbase/pocketbase v0.36.5
 )
 
@@ -22,7 +22,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/paccolamano/plugin/pbplugin v0.0.0 // indirect
+	github.com/paccolamano/plugin/pbplugin v0.1.0 // indirect
 	github.com/pocketbase/dbx v1.12.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/cast v1.10.0 // indirect
@@ -40,9 +40,4 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.46.1 // indirect
-)
-
-replace (
-	github.com/paccolamano/plugin/pbplugin => ../../pbplugin
-	github.com/paccolamano/plugin/plugincmd => ../../plugincmd
 )
