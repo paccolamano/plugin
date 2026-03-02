@@ -99,10 +99,6 @@ func ensureCollection(app core.App) error {
 }
 
 func loadAll(app core.App, dir string) error {
-	if dir == "" {
-		dir = filepath.Join(app.DataDir(), "..", defaultPluginFolder)
-	}
-
 	records, err := app.FindAllRecords(pluginCollectionName)
 	if err != nil {
 		return nil // collection does not exist yet
